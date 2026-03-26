@@ -1,18 +1,19 @@
 import express from "express";
 
 const app = express();
-app.use(express.json());
 
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
+    res.sendStatus(200);
+  } else {
+    next();
   }
-  next();
 });
+
+app.use(express.json());
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Tract IQ MCP Server is running' });
@@ -21,27 +22,6 @@ app.get('/health', (req, res) => {
 app.post('/mcp', (req, res) => {
   try {
     const { method, params } = req.body;
-
-    if (method === 'tools/list') {
-      return res.json({
-        tools: [
-          {
-            name: 'search_address',
-            description: 'Search for market data at an address',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                address: {
-                  type: 'string',
-                  description: 'Property address'
-                }
-              },
-              required: ['address']
-            }
-          }
-        ]
-      });
-    }
 
     if (method === 'tools/call' && params.name === 'search_address') {
       const address = params.arguments.address;
@@ -54,8 +34,7 @@ app.post('/mcp', (req, res) => {
                   `Occupancy Rate: 85%\n` +
                   `Median Income: $573,387\n` +
                   `Facilities: 63\n` +
-                  `Square Footage: 4,252,660\n\n` +
-                  `This is sample data. Real Tract IQ integration coming soon.`
+                  `Square Footage: 4,252,660`
           }
         ]
       });
@@ -67,7 +46,7 @@ app.post('/mcp', (req, res) => {
   }
 });
 
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8080;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
