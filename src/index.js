@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import express from "express";
 
 const server = new McpServer({
@@ -41,27 +41,6 @@ server.registerTool("search_address", {
 const app = express();
 app.use(express.json());
 
-app.post('/mcp', async (req, res) => {
-  try {
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true
-    });
-
-    res.on('close', () => {
-      transport.close().catch((err) => {
-        console.error("Transport close error:", err);
-      });
-    });
-
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-  } catch (error) {
-    console.error("MCP error:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Tract IQ MCP Server is running' });
 });
@@ -69,6 +48,5 @@ app.get('/health', (req, res) => {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-  console.log(`MCP endpoint: http://localhost:${port}/mcp`);
   console.log(`Health check: http://localhost:${port}/health`);
 });
