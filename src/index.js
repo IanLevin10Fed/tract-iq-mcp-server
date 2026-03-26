@@ -3,14 +3,15 @@ import express from "express";
 const app = express();
 
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  
   if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
-    next();
+    return res.sendStatus(200);
   }
+  
+  next();
 });
 
 app.use(express.json());
@@ -20,33 +21,23 @@ app.get('/health', (req, res) => {
 });
 
 app.post('/mcp', (req, res) => {
-  try {
-    const { method, params } = req.body;
+  const { method, params } = req.body;
 
-    if (method === 'tools/call' && params.name === 'search_address') {
-      const address = params.arguments.address;
-      return res.json({
-        content: [
-          {
-            type: 'text',
-            text: `Market Data for ${address}:\n\n` +
-                  `Population: 281,406\n` +
-                  `Occupancy Rate: 85%\n` +
-                  `Median Income: $573,387\n` +
-                  `Facilities: 63\n` +
-                  `Square Footage: 4,252,660`
-          }
-        ]
-      });
-    }
-
-    res.json({ error: 'Unknown method' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  if (method === 'tools/call' && params?.name === 'search_address') {
+    const address = params.arguments?.address || 'Unknown';
+    res.json({
+      content: [
+        {
+          type: 'text',
+          text: `Market Data for ${address}:\n\nPopulation: 281,406\nOccupancy Rate: 85%\nMedian Income: $573,387\nFacilities: 63\nSquare Footage: 4,252,660`
+        }
+      ]
+    });
+  } else {
+    res.json({ error: 'Invalid request' });
   }
 });
 
-const port = process.env.PORT || 8080;
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+app.listen(8080, () => {
+  console.log('Server running on port 8080');
 });
