@@ -7,31 +7,42 @@ const server = new McpServer({
   version: "1.0.0"
 });
 
-function generateMockData(address) {
-  return {
-    address,
-    status: 'active',
-    message: `Market analysis data for ${address}`,
+server.registerTool("search_address", {
+  title: "Search Address",
+  description: "Search for market data at an address",
+  inputSchema: {
+    type: "object",
+    properties: {
+      address: {
+        type: "string",
+        description: "Property address"
+      }
+    },
+    required: ["address"]
+  }
+}, async (params) => {
+  const result = {
+    address: params.address,
     population: 281406,
     occupancyRate: 0.85,
-    medianIncome: 573387
+    medianIncome: 573387,
+    facilities: 63,
+    squareFootage: 4252660
   };
-}
-
-server.registerTool("tract_iq_search_property", {
-  title: "Search Property",
-  description: "Search for property market data",
-  inputSchema: { type: "object", properties: { address: { type: "string" } }, required: ["address"] }
-}, async (params) => {
-  const data = generateMockData(params.address);
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  
+  return {
+    content: [{
+      type: "text",
+      text: `Market Data for ${params.address}:\n\n${JSON.stringify(result, null, 2)}`
+    }]
+  };
 });
 
-async function runHTTP() {
-  const app = express();
-  app.use(express.json());
+const app = express();
+app.use(express.json());
 
-  app.post('/mcp', async (req, res) => {
+app.post('/mcp', async (req, res) => {
+  try {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true
@@ -45,19 +56,19 @@ async function runHTTP() {
 
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
-  });
+  } catch (error) {
+    console.error("MCP error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
-  app.get('/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Tract IQ MCP Server is running' });
-  });
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Tract IQ MCP Server is running' });
+});
 
-  const port = parseInt(process.env.PORT || '3000');
-  app.listen(port, () => {
-    console.error(`MCP server running on http://localhost:${port}/mcp`);
-  });
-}
-
-runHTTP().catch((error) => {
-  console.error("Server error:", error);
-  process.exit(1);
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+  console.log(`MCP endpoint: http://localhost:${port}/mcp`);
+  console.log(`Health check: http://localhost:${port}/health`);
 });
