@@ -1,0 +1,20 @@
+{
+  "name": "tract-iq-mcp-server",
+  "version": "2.0.0",
+  "description": "Live Tract IQ market data scraper for self-storage underwriting",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "playwright": "^1.43.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
