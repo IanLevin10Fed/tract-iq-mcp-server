@@ -1,171 +1,133 @@
-/**
- * Tract IQ MCP Server
- * Express HTTP server exposing Playwright-based Tract IQ scraping
- * as a REST API for use with Claude.
- */
+import { chromium } from 'playwright';
 
-import express from 'express';
-import 'dotenv/config';
-import { searchProperty, closeBrowser } from './tractiq.js';
-import { formatPropertyData, formatMarkdownReport } from './formatter.js';
+const TRACTIQ_URL = 'https://app.tractiq.com';
+const LOGIN_URL = `${TRACTIQ_URL}/login`;
 
-const app = express();
-const PORT = process.env.PORT || 8080;
+let browserInstance = null;
+let pageInstance = null;
+let isLoggedIn = false;
 
-// ─── CORS ────────────────────────────────────────────────────────────────────
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
+async function getBrowser() {
+  if (!browserInstance || !browserInstance.isConnected()) {
+    browserInstance = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    isLoggedIn = false;
+  }
+  return browserInstance;
+}
 
-app.use(express.json());
+async function getPage() {
+  const browser = await getBrowser();
+  if (!pageInstance || pageInstance.isClosed()) {
+    pageInstance = await browser.newPage();
+    await pageInstance.setViewportSize({ width: 1400, height: 900 });
+    isLoggedIn = false;
+  }
+  return pageInstance;
+}
 
-// ─── HEALTH ───────────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    message: 'Tract IQ MCP Server (live scraper) is running',
-    version: '2.0.0',
-    timestamp: new Date().toISOString(),
+async function login(page) {
+  if (isLoggedIn) return;
+  const email = process.env.TRACT_IQ_EMAIL;
+  const password = process.env.TRACT_IQ_PASSWORD;
+  if (!email || !password) throw new Error('TRACT_IQ_EMAIL and TRACT_IQ_PASSWORD env vars are required');
+  console.log('Logging into Tract IQ...');
+  await page.goto(LOGIN_URL, { waitUntil: 'networkidle', timeout: 30000 });
+  await page.fill('input[type="email"], input[name="email"], input[placeholder*="email" i]', email);
+  await page.fill('input[type="password"], input[name="password"], input[placeholder*="password" i]', password);
+  await page.click('button[type="submit"], button:has-text("Sign in"), button:has-text("Log in"), button:has-text("Login")');
+  await page.waitForURL((url) => !url.toString().includes('/login'), { timeout: 20000 });
+  await page.waitForLoadState('networkidle', { timeout: 20000 });
+  console.log('Login successful');
+  isLoggedIn = true;
+}
+
+async function searchAddress(page, address) {
+  console.log(`Searching for: ${address}`);
+  await page.goto(TRACTIQ_URL, { waitUntil: 'networkidle', timeout: 30000 });
+  const searchSelectors = [
+    'input[placeholder*="search" i]',
+    'input[placeholder*="address" i]',
+    'input[aria-label*="search" i]',
+    'input[type="search"]',
+    '[data-testid="search-input"]',
+    '.search-input input',
+  ];
+  let searchInput = null;
+  for (const selector of searchSelectors) {
+    try {
+      searchInput = await page.waitForSelector(selector, { timeout: 3000 });
+      if (searchInput) break;
+    } catch { continue; }
+  }
+  if (!searchInput) throw new Error('Could not find search input on Tract IQ');
+  await searchInput.click();
+  await searchInput.fill('');
+  await searchInput.type(address, { delay: 50 });
+  await page.waitForTimeout(1500);
+  const suggestionSelectors = [
+    '[data-testid="suggestion-item"]:first-child',
+    '.autocomplete-item:first-child',
+    'li[role="option"]:first-child',
+    '[role="listbox"] [role="option"]:first-child',
+    '.dropdown-item:first-child',
+  ];
+  let clicked = false;
+  for (const sel of suggestionSelectors) {
+    try {
+      await page.click(sel, { timeout: 3000 });
+      clicked = true;
+      break;
+    } catch { continue; }
+  }
+  if (!clicked) await searchInput.press('Enter');
+  await page.waitForLoadState('networkidle', { timeout: 30000 });
+  await page.waitForTimeout(2000);
+}
+
+async function extractData(page) {
+  return await page.evaluate(() => {
+    const text = document.body.innerText;
+    const stats = [];
+    document.querySelectorAll('[class*="stat"], [class*="metric"], [class*="card"], [class*="kpi"]').forEach(el => {
+      const label = el.querySelector('[class*="label"], [class*="title"], h3, h4, p')?.innerText?.trim();
+      const value = el.querySelector('[class*="value"], [class*="number"], strong, span')?.innerText?.trim();
+      if (label && value) stats.push({ label, value });
+    });
+    const tables = [];
+    document.querySelectorAll('table').forEach(table => {
+      const rows = [];
+      table.querySelectorAll('tr').forEach(tr => {
+        const cells = Array.from(tr.querySelectorAll('td, th')).map(c => c.innerText.trim());
+        if (cells.length > 0) rows.push(cells);
+      });
+      if (rows.length > 0) tables.push(rows);
+    });
+    return { stats, tables, rawText: text.substring(0, 8000) };
   });
-});
+}
 
-// ─── MAIN SEARCH ENDPOINT ─────────────────────────────────────────────────────
-/**
- * POST /search
- * Body: { address: string, format?: "json" | "markdown", reportType?: string }
- * Returns: structured market data from Tract IQ
- */
-app.post('/search', async (req, res) => {
-  const { address, format = 'json', reportType = 'full' } = req.body;
-
-  if (!address || typeof address !== 'string' || address.trim().length < 5) {
-    return res.status(400).json({
-      error: 'Invalid request',
-      message: 'address is required and must be a non-empty string',
-    });
-  }
-
-  if (!process.env.TRACT_IQ_EMAIL || !process.env.TRACT_IQ_PASSWORD) {
-    return res.status(500).json({
-      error: 'Configuration error',
-      message: 'TRACT_IQ_EMAIL and TRACT_IQ_PASSWORD environment variables must be set',
-    });
-  }
-
-  console.log(`[${new Date().toISOString()}] Search request: ${address}`);
-
+export async function searchProperty(address) {
+  const page = await getPage();
   try {
-    const rawData = await searchProperty(address.trim());
-    const structured = formatPropertyData(rawData);
-
-    if (format === 'markdown') {
-      const report = formatMarkdownReport(structured, reportType);
-      return res.json({ address, report, timestamp: structured.timestamp });
-    }
-
-    return res.json(structured);
+    await login(page);
+    await searchAddress(page, address);
+    const data = await extractData(page);
+    return { address, url: page.url(), timestamp: new Date().toISOString(), data };
   } catch (error) {
-    console.error('Search error:', error.message);
-
-    // Return useful error info
-    const isLoginError = error.message.toLowerCase().includes('login') ||
-                         error.message.toLowerCase().includes('auth') ||
-                         error.message.toLowerCase().includes('password');
-
-    return res.status(500).json({
-      error: 'Scraping failed',
-      message: error.message,
-      hint: isLoginError
-        ? 'Check TRACT_IQ_EMAIL and TRACT_IQ_PASSWORD environment variables'
-        : 'Tract IQ UI may have changed — check selector patterns in tractiq.js',
-    });
+    console.error('searchProperty error:', error.message);
+    isLoggedIn = false;
+    throw error;
   }
-});
+}
 
-// ─── EXECUTIVE SUMMARY SHORTCUT ───────────────────────────────────────────────
-/**
- * POST /summary
- * Alias for /search that always returns markdown executive summary format
- */
-app.post('/summary', async (req, res) => {
-  req.body.format = 'markdown';
-  req.body.reportType = 'supply_only';
-
-  const { address } = req.body;
-  if (!address) {
-    return res.status(400).json({ error: 'address is required' });
+export async function closeBrowser() {
+  if (browserInstance) {
+    await browserInstance.close();
+    browserInstance = null;
+    pageInstance = null;
+    isLoggedIn = false;
   }
-
-  try {
-    const rawData = await searchProperty(address.trim());
-    const structured = formatPropertyData(rawData);
-    const report = formatMarkdownReport(structured, 'supply_only');
-    return res.json({ address, report, data: structured.supply });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-});
-
-// ─── DEMOGRAPHICS SHORTCUT ────────────────────────────────────────────────────
-app.post('/demographics', async (req, res) => {
-  const { address } = req.body;
-  if (!address) {
-    return res.status(400).json({ error: 'address is required' });
-  }
-
-  try {
-    const rawData = await searchProperty(address.trim());
-    const structured = formatPropertyData(rawData);
-    const report = formatMarkdownReport(structured, 'demographics_only');
-    return res.json({ address, report, data: structured.demographics });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-});
-
-// ─── COMPS SHORTCUT ───────────────────────────────────────────────────────────
-app.post('/comps', async (req, res) => {
-  const { address } = req.body;
-  if (!address) {
-    return res.status(400).json({ error: 'address is required' });
-  }
-
-  try {
-    const rawData = await searchProperty(address.trim());
-    const structured = formatPropertyData(rawData);
-    return res.json({
-      address,
-      rentalComps: structured.rentalComps,
-      rateTrends: structured.rateTrends,
-    });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-});
-
-// ─── GRACEFUL SHUTDOWN ────────────────────────────────────────────────────────
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, closing browser...');
-  await closeBrowser();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('SIGINT received, closing browser...');
-  await closeBrowser();
-  process.exit(0);
-});
-
-// ─── START ────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`✅ Tract IQ MCP Server running on port ${PORT}`);
-  console.log(`   Health:      GET  /health`);
-  console.log(`   Search:      POST /search      { address, format?, reportType? }`);
-  console.log(`   Summary:     POST /summary     { address }`);
-  console.log(`   Demographics:POST /demographics { address }`);
-  console.log(`   Comps:       POST /comps       { address }`);
-});
+}
