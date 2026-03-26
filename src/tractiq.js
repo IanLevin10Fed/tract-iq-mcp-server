@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 
 const TRACTIQ_URL = 'https://app.tractiq.com';
-const LOGIN_URL = `${TRACTIQ_URL}/login`;
+const LOGIN_URL = 'https://app.tractiq.com/selfstorage/login';
 
 let browserInstance = null;
 let pageInstance = null;
@@ -131,3 +131,4 @@ export async function closeBrowser() {
     isLoggedIn = false;
   }
 }
+
