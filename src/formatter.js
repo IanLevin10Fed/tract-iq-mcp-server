@@ -1,159 +1,154 @@
-import { chromium } from 'playwright';
-import pdfParse from 'pdf-parse';
-
-const LOGIN_URL = 'https://app.tractiq.com/selfstorage/login';
-const DASHBOARD_URL = 'https://dashboard.tractiq.com';
-const INSIGHTS_URL = 'https://insights.tractiq.com';
-
-let browserInstance = null;
-let pageInstance = null;
-let isLoggedIn = false;
-
-async function getBrowser() {
-  if (!browserInstance || !browserInstance.isConnected()) {
-    browserInstance = await chromium.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-    });
-    isLoggedIn = false;
+function extractValue(text, patterns) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[1].trim();
   }
-  return browserInstance;
+  return null;
 }
 
-async function getPage() {
-  const browser = await getBrowser();
-  if (!pageInstance || pageInstance.isClosed()) {
-    pageInstance = await browser.newPage();
-    await pageInstance.setViewportSize({ width: 1440, height: 900 });
-    isLoggedIn = false;
+function parseKeyValueLines(text) {
+  const result = {};
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  for (let i = 0; i < lines.length - 1; i++) {
+    const label = lines[i];
+    const value = lines[i + 1];
+    if (/^[\$\d][\d,.\s%$NAna\/]*$/.test(value) && label.length > 2 && label.length < 60) {
+      const key = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+      result[key] = value;
+      i++;
+    }
   }
-  return pageInstance;
+  return result;
 }
 
-async function login(page) {
-  if (isLoggedIn) return;
-  const email = process.env.TRACT_IQ_EMAIL;
-  const password = process.env.TRACT_IQ_PASSWORD;
-  if (!email || !password) throw new Error('TRACT_IQ_EMAIL and TRACT_IQ_PASSWORD env vars are required');
-  console.log('Logging into Tract IQ...');
-  await page.goto(LOGIN_URL, { waitUntil: 'networkidle', timeout: 30000 });
-  await page.fill('input[type="email"], input[name="email"], input[placeholder*="email" i]', email);
-  await page.fill('input[type="password"], input[name="password"], input[placeholder*="password" i]', password);
-  await page.click('input[type="submit"], input#login-form-submit, input[value="Login"]');
-  await page.waitForURL((url) => !url.toString().includes('/login'), { timeout: 20000 });
-  await page.waitForLoadState('networkidle', { timeout: 20000 });
-  console.log('Login successful');
-  isLoggedIn = true;
-}
-
-async function getInsightsParams(page, address) {
-  console.log(`Searching for: ${address}`);
-  await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle', timeout: 30000 });
-  await page.waitForTimeout(2000);
-
-  await page.click('input[placeholder*="address" i], input[placeholder*="search" i], input[placeholder*="Enter address" i]');
-  await page.waitForTimeout(500);
-  await page.keyboard.type(address, { delay: 50 });
-  await page.waitForTimeout(2000);
-
-  const suggestion = await page.waitForSelector(
-    '[role="option"]:first-child, [role="listbox"] li:first-child, [class*="autocomplete"] li:first-child',
-    { timeout: 10000 }
-  );
-  await suggestion.click();
-  await page.waitForLoadState('networkidle', { timeout: 30000 });
-  await page.waitForTimeout(2000);
-
-  console.log('Clicking Analyze deal...');
-  await page.click('a:has-text("Analyze deal"), button:has-text("Analyze deal")', { timeout: 15000 });
-  await page.waitForURL((url) => url.toString().includes('insights.tractiq.com'), { timeout: 30000 });
-  await page.waitForLoadState('networkidle', { timeout: 30000 });
-  await page.waitForTimeout(2000);
-
-  const url = page.url();
-  console.log('Insights URL:', url);
-  const poisMatch = url.match(/pois=([^&]+)/);
-  const facilityIdMatch = url.match(/facility-id=([^&]+)/);
-  const titleMatch = url.match(/title=([^&]+)/);
-  if (!poisMatch || !facilityIdMatch) throw new Error(`Could not extract params from: ${url}`);
-
+function parseExecutiveSummary(text) {
+  if (!text) return null;
+  const extract = (patterns) => extractValue(text, patterns);
   return {
-    pois: poisMatch[1],
-    facilityId: facilityIdMatch[1],
-    title: titleMatch ? decodeURIComponent(titleMatch[1]) : address,
+    sfPerCapita: extract([/Square Footage per Capita[\s\n]+([\d.]+)/i]),
+    reitSfPerCapita: extract([/REIT Square Footage per Capita[\s\n]+([\d.NAna]+)/i]),
+    nonReitSfPerCapita: extract([/Non-REIT Square Footage per Capita[\s\n]+([\d.]+)/i]),
+    facilities: extract([/Number of Current Facilities[\s\n]+(\d+)/i]),
+    totalGrossSF: extract([/Total Gross Square Footage[\s\n]+([\d,]+)/i]),
+    totalNetRentableSF: extract([/Total Net Rentable Square Footage[\s\n]+([\d,]+)/i]),
+    pctDriveUp: extract([/% Sq Ft that is Drive Up[\s\n]+([\d.%]+)/i]),
+    pctClimateControl: extract([/% Current Facilities Offering Climate Control[\s\n]+([\d.%]+)/i]),
+    population: extract([/Population[\s\n]+([\d,]+)/i]),
+    populationDensity: extract([/Population Density[\s\n]+([\d,.]+)/i]),
+    medianHouseholdIncome: extract([/Median Household Income[\s\n]+\$?([\d,]+)/i]),
+    avgHouseholdIncome: extract([/Average Household Income[\s\n]+\$?([\d,.]+)/i]),
+    households: extract([/Number of Households[\s\n]+([\d,]+)/i]),
+    pctRenters: extract([/% Renters[\s\n]+([\d.%]+)/i]),
+    pctHomeowners: extract([/% Homeowners[\s\n]+([\d.%]+)/i]),
+    sfPerHousehold: extract([/Sq\. Ft\. per Household[\s\n]+([\d,]+)/i]),
+    newFacilitiesInDevelopment: extract([/New Facilities in Development[\s\n]+(\d+)/i]),
+    _raw: parseKeyValueLines(text),
   };
 }
 
-function buildTabUrl(tabPath, params) {
-  const encodedTitle = encodeURIComponent(params.title);
-  return `${INSIGHTS_URL}/#/selfstorage/${tabPath}?pois=${params.pois}&profile=radius&selection=3,5&title=${encodedTitle}&facility-id=${params.facilityId}&point-type=houseNumber`;
+function parseDemography(text) {
+  if (!text) return null;
+  const extract = (patterns) => extractValue(text, patterns);
+  return {
+    totalPopulation3mi: extract([/3 Miles?[\s\S]{0,200}?Total Population[\s\n]+([\d,]+)/i]),
+    totalPopulation5mi: extract([/5 Miles?[\s\S]{0,200}?Total Population[\s\n]+([\d,]+)/i]),
+    daytimePopulation3mi: extract([/3 Miles?[\s\S]{0,200}?Daytime Population[\s\n]+([\d,]+)/i]),
+    daytimePopulation5mi: extract([/5 Miles?[\s\S]{0,200}?Daytime Population[\s\n]+([\d,]+)/i]),
+    medianIncome3mi: extract([/3 Miles?[\s\S]{0,300}?Median Household Income[\s\n]+\$?([\d,]+)/i]),
+    medianIncome5mi: extract([/5 Miles?[\s\S]{0,300}?Median Household Income[\s\n]+\$?([\d,]+)/i]),
+    avgIncome3mi: extract([/3 Miles?[\s\S]{0,300}?Average Household Income[\s\n]+\$?([\d,.]+)/i]),
+    avgIncome5mi: extract([/5 Miles?[\s\S]{0,300}?Average Household Income[\s\n]+\$?([\d,.]+)/i]),
+    pctRenters3mi: extract([/3 Miles?[\s\S]{0,300}?% Renters[\s\n]+([\d.%]+)/i]),
+    pctRenters5mi: extract([/5 Miles?[\s\S]{0,300}?% Renters[\s\n]+([\d.%]+)/i]),
+    _rawKv: parseKeyValueLines(text),
+  };
 }
 
-async function downloadTabPdf(page, tabPath, tabName, params) {
-  const url = buildTabUrl(tabPath, params);
-  console.log(`Downloading PDF for ${tabName}...`);
-
-  await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-  await page.waitForTimeout(3000);
-
-  const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
-  await page.click('button:has-text("PDF"), a:has-text("PDF"), [aria-label*="PDF"], button[title*="PDF"]', { timeout: 10000 });
-  const download = await downloadPromise;
-
-  const buffer = await new Promise((resolve, reject) => {
-    download.createReadStream().then(stream => {
-      const chunks = [];
-      stream.on('data', chunk => chunks.push(chunk));
-      stream.on('end', () => resolve(Buffer.concat(chunks)));
-      stream.on('error', reject);
-    });
-  });
-
-  console.log(`PDF downloaded for ${tabName}: ${buffer.length} bytes`);
-  return buffer;
+function parseOpportunity(text) {
+  if (!text) return null;
+  const extract = (patterns) => extractValue(text, patterns);
+  return {
+    sfPerCapitaCurrent3mi: extract([/3 Miles?[\s\S]{0,200}?Current[\s\n]+([\d.]+)/i]),
+    sfPerCapitaCurrent5mi: extract([/5 Miles?[\s\S]{0,200}?Current[\s\n]+([\d.]+)/i]),
+    sfPerCapitaCensusProjection3mi: extract([/3 Miles?[\s\S]{0,300}?Census Projection[\s\n]+([\d.]+)/i]),
+    sfPerCapitaCensusProjection5mi: extract([/5 Miles?[\s\S]{0,300}?Census Projection[\s\n]+([\d.]+)/i]),
+    _rawKv: parseKeyValueLines(text),
+  };
 }
 
-export async function searchProperty(address) {
-  const page = await getPage();
-  try {
-    await login(page);
-    const params = await getInsightsParams(page, address);
-    console.log('Got params:', params);
+function parseRateTrends(text) {
+  if (!text) return null;
+  return {
+    _rawKv: parseKeyValueLines(text),
+    _rawText: text.substring(0, 3000),
+  };
+}
 
-    const tabs = [
-      { name: 'executive_summary', path: 'market-profile' },
-      { name: 'demography', path: 'demography' },
-      { name: 'opportunity', path: 'selfstorage-opportunity' },
-      { name: 'rate_trends', path: 'selfstorage-price' },
-      { name: 'rental_comps', path: 'selfstorage-comps' },
-    ];
-
-    const pdfTexts = {};
-    for (const tab of tabs) {
-      try {
-        const buffer = await downloadTabPdf(page, tab.path, tab.name, params);
-        const parsed = await pdfParse(buffer);
-        pdfTexts[tab.name] = parsed.text;
-        console.log(`Parsed ${tab.name}: ${parsed.text.length} chars`);
-      } catch (err) {
-        console.error(`Failed ${tab.name}:`, err.message);
-        pdfTexts[tab.name] = null;
-      }
+function parseRentalComps(text) {
+  if (!text) return null;
+  const comps = [];
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  let currentComp = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.match(/Storage|Self Storage|U-Haul|CubeSmart|Extra Space|Public Storage|Life Storage/i) &&
+        !line.match(/^\$|^[\d.]+$|^N\/A$/)) {
+      if (currentComp) comps.push(currentComp);
+      currentComp = { name: line, rates: {} };
     }
-
-    return { address, params, timestamp: new Date().toISOString(), pdfTexts };
-  } catch (error) {
-    console.error('searchProperty error:', error.message);
-    isLoggedIn = false;
-    throw error;
+    if (currentComp && line.match(/^\$[\d.]+$/)) {
+      const rateKeys = ['cc_5x5','cc_5x10','cc_10x10','cc_10x15','cc_10x20','cc_10x30',
+                        'ncc_5x5','ncc_5x10','ncc_10x10','ncc_10x15','ncc_10x20','ncc_10x30'];
+      const filledCount = Object.keys(currentComp.rates).length;
+      if (filledCount < rateKeys.length) currentComp.rates[rateKeys[filledCount]] = line;
+    }
+    if (currentComp && line.match(/^\d+\.?\d*\s*miles?$/i)) currentComp.distance = line;
+    if (currentComp && line.match(/^[\d,]+\s*sq\.\s*feet$/i)) currentComp.sqFt = line;
   }
+  if (currentComp) comps.push(currentComp);
+  return { comps: comps.slice(0, 30), _rawText: text.substring(0, 5000) };
 }
 
-export async function closeBrowser() {
-  if (browserInstance) {
-    await browserInstance.close();
-    browserInstance = null;
-    pageInstance = null;
-    isLoggedIn = false;
+export function formatPropertyData(raw) {
+  if (!raw) return { error: 'No data returned' };
+  const { address, params, timestamp, pdfTexts } = raw;
+  return {
+    address,
+    timestamp,
+    insightsUrl: params ? `https://insights.tractiq.com/#/selfstorage/market-profile?pois=${params.pois}&profile=radius&selection=3,5&facility-id=${params.facilityId}&point-type=houseNumber` : null,
+    executiveSummary: parseExecutiveSummary(pdfTexts?.executive_summary),
+    demography: parseDemography(pdfTexts?.demography),
+    opportunity: parseOpportunity(pdfTexts?.opportunity),
+    rateTrends: parseRateTrends(pdfTexts?.rate_trends),
+    rentalComps: parseRentalComps(pdfTexts?.rental_comps),
+  };
+}
+
+export function formatMarkdownReport(data) {
+  if (data.error) return `Error: ${data.error}`;
+  const lines = [];
+  lines.push(`# Tract IQ Report: ${data.address}`);
+  lines.push(`Generated: ${new Date(data.timestamp).toLocaleString()}\n`);
+  const s = data.executiveSummary;
+  if (s) {
+    lines.push(`## Executive Summary`);
+    if (s.sfPerCapita) lines.push(`- SF per Capita: ${s.sfPerCapita}`);
+    if (s.facilities) lines.push(`- Facilities: ${s.facilities}`);
+    if (s.totalNetRentableSF) lines.push(`- Net Rentable SF: ${s.totalNetRentableSF}`);
+    if (s.pctClimateControl) lines.push(`- % Climate Control: ${s.pctClimateControl}`);
+    if (s.pctDriveUp) lines.push(`- % Drive Up: ${s.pctDriveUp}`);
+    if (s.population) lines.push(`- Population: ${s.population}`);
+    if (s.medianHouseholdIncome) lines.push(`- Median HH Income: $${s.medianHouseholdIncome}`);
+    if (s.pctRenters) lines.push(`- % Renters: ${s.pctRenters}`);
   }
+  const c = data.rentalComps;
+  if (c?.comps?.length > 0) {
+    lines.push(`\n## Rental Comps (${c.comps.length} facilities)`);
+    lines.push(`| Facility | Distance | 10x10 CC | 10x10 NCC |`);
+    lines.push(`|----------|----------|----------|-----------|`);
+    c.comps.forEach(comp => {
+      lines.push(`| ${comp.name} | ${comp.distance || 'N/A'} | ${comp.rates?.cc_10x10 || 'N/A'} | ${comp.rates?.ncc_10x10 || 'N/A'} |`);
+    });
+  }
+  return lines.join('\n');
 }
