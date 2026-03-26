@@ -1,0 +1,30 @@
+[build]
+  command = "npm run build"
+  functions = "dist"
+  publish = "dist"
+
+[env]
+  TRANSPORT = "http"
+  NODE_ENV = "production"
+
+# Health check
+[[redirects]]
+  from = "/health"
+  to = "/.netlify/functions/health"
+  status = 200
+  force = true
+
+# Main MCP endpoint
+[[redirects]]
+  from = "/mcp"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
+
+[[headers]]
+  for = "/mcp"
+  [headers.values]
+    Content-Type = "application/json"
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "POST, GET, OPTIONS"
+    Access-Control-Allow-Headers = "Content-Type"
